@@ -36,7 +36,7 @@
 #' @export
 #'
 
-mixedModelDE2 <- function(object, elt = "exprs", modelFormula = NULL,
+mixedModelDE <- function(object, elt = "exprs", modelFormula = NULL,
                          groupVar = "group", continuous = FALSE, nCores = 1, multiCore = TRUE,
                          pAdjust = "BY", pairwise = TRUE) {
   if (is.null(modelFormula)) {
