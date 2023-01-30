@@ -7,6 +7,7 @@
 #' @param elt assayDataElement of the geoMxSet object to run the DE on
 #' @param modelFormula formula used in DE, if null, the design(object) is used
 #' @param groupVar = "group",  sample annotation to group the data for comparing means
+#' @param continuous = FALSE,  boolean to indicate whether the 'groupVar' is a continuous numeric variable. No ANOVA is performed when TRUE.
 #' @param nCores = 1, number of cores to use, set to 1 if running in serial mode
 #' @param multiCore = TRUE, set to TRUE to use multiCore, FALSE to run in cluster mode
 #' @param pAdjust = "BY" method for p-value adjustment
@@ -35,8 +36,8 @@
 #' @export
 #'
 
-mixedModelDE <- function(object, elt = "exprs", modelFormula = NULL,
-                         groupVar = "group", nCores = 1, multiCore = TRUE,
+mixedModelDE2 <- function(object, elt = "exprs", modelFormula = NULL,
+                         groupVar = "group", continuous = FALSE, nCores = 1, multiCore = TRUE,
                          pAdjust = "BY", pairwise = TRUE) {
   if (is.null(modelFormula)) {
     modelFormula <- design(object)
@@ -56,23 +57,26 @@ mixedModelDE <- function(object, elt = "exprs", modelFormula = NULL,
   pDat <- sData(object)[,mTerms]
   for (i in names(pDat))
   {
-    if (inherits(i, "character")) {
+    if (inherits(pDat[, i], "character")) {
       pDat[, i] <- as.factor(pDat[, i])
     }
   }
   if (nCores > 1) {
-    deFunc <- function(i, groupVar, pDat, modelFormula, exprs, pairwise = TRUE) {
+    deFunc <- function(i, groupVar,  pDat, modelFormula, exprs, pairwise = TRUE, continuous) {
       dat <- data.frame(expr = exprs$exprs[i, ], pDat)
       lmOut <- suppressWarnings(lmerTest::lmer(modelFormula, dat))
-      if(pairwise == FALSE) {
-        lsm <- lmerTest::ls_means(lmOut, which = groupVar, pairwise = FALSE)
+      if(!continuous) {
+        if(pairwise == FALSE) {
+          lsm <- lmerTest::ls_means(lmOut, which = groupVar, pairwise = FALSE)
+        } else {
+          lsm <- lmerTest::ls_means(lmOut, which = groupVar, pairwise = TRUE)
+        }
+        lmOut <- matrix(stats::anova(lmOut)[groupVar, "Pr(>F)"], ncol = 1, dimnames = list(groupVar, "Pr(>F)"))
+        lsmOut <- matrix(cbind(lsm[,"Estimate"], lsm[,"Pr(>|t|)"]), ncol = 2, dimnames = list(gsub(groupVar, "", rownames(lsm)), c("Estimate", "Pr(>|t|)")))
+        return(list(anova = lmOut, lsmeans = lsmOut))
       } else {
-        lsm <- lmerTest::ls_means(lmOut, which = groupVar, pairwise = TRUE)
+        return(as.list(summary(lmOut)$coefficients[groupVar, c("Estimate", "Pr(>|t|)")]))
       }
-      lmOut <- matrix(stats::anova(lmOut)[groupVar, "Pr(>F)"], ncol = 1, dimnames = list(groupVar, "Pr(>F)"))
-      lsmOut <- matrix(cbind(lsm[,"Estimate"], lsm[,"Pr(>|t|)"]), ncol = 2, dimnames = list(gsub(groupVar, "", rownames(lsm)), c("Estimate", "Pr(>|t|)")))
-
-      return(list(anova = lmOut, lsmeans = lsmOut))
     }
     exprs <- new.env()
     exprs$exprs <- assayDataElement(object, elt = elt)
@@ -81,32 +85,47 @@ mixedModelDE <- function(object, elt = "exprs", modelFormula = NULL,
     }
     else {
       cl <- parallel::makeCluster(getOption("cl.cores", nCores))
-      mixedOut <- parallel::parLapply(cl, featureNames(object), deFunc, groupVar, pDat, formula(paste("expr", as.character(modelFormula)[2], sep = " ~ ")), exprs, pairwise)
+      mixedOut <- parallel::parLapply(cl, featureNames(object), deFunc, groupVar, pDat, formula(paste("expr", as.character(modelFormula)[2], sep = " ~ ")), exprs, pairwise, continuous)
       suppressWarnings(parallel::stopCluster(cl))
     }
-    mixedOut <- rbind(array(lapply(mixedOut, function(x) x[["anova"]])),
-                      array(lapply(mixedOut, function(x) x[["lsmeans"]])))
-    colnames(mixedOut) <- featureNames(object)
-    rownames(mixedOut) <- c("anova", "lsmeans")
+    if(!continuous){
+      mixedOut <- rbind(array(lapply(mixedOut, function(x) x[["anova"]])),
+                        array(lapply(mixedOut, function(x) x[["lsmeans"]])))
+      colnames(mixedOut) <- featureNames(object)
+      rownames(mixedOut) <- c("anova", "lsmeans")
+    } else{
+      mixedOut <- rbind(array(lapply(mixedOut, function(x) x[["Estimate"]])),
+                        array(lapply(mixedOut, function(x) x[["Pr(>|t|)"]])))
+      colnames(mixedOut) <- featureNames(object)
+      rownames(mixedOut) <- c("Estimate", "Pr(>|t|)")
+    }
+    
   }
   else {
-    deFunc <- function(expr, groupVar, pDat, modelFormula, pairwise = TRUE) {
+    deFunc <- function(expr, groupVar, pDat, modelFormula, pairwise = TRUE, continuous) {
       dat <- data.frame(expr = expr, pDat)
       lmOut <- suppressMessages(lmerTest::lmer(modelFormula, dat))
-      if(pairwise == FALSE) {
-        lsm <- lmerTest::ls_means(lmOut, which = groupVar, pairwise = FALSE)
+      if(!continuous) {
+        if(pairwise == FALSE) {
+          lsm <- lmerTest::ls_means(lmOut, which = groupVar, pairwise = FALSE)
+        } else {
+          lsm <- lmerTest::ls_means(lmOut, which = groupVar, pairwise = TRUE)
+        }
+        lmOut <- matrix(stats::anova(lmOut)[groupVar, "Pr(>F)"], ncol = 1, dimnames = list(groupVar, "Pr(>F)"))
+        lsmOut <- matrix(cbind(lsm[,"Estimate"], lsm[,"Pr(>|t|)"]), ncol = 2, dimnames = list(gsub(groupVar, "", rownames(lsm)), c("Estimate", "Pr(>|t|)")))
+        return(list(anova = lmOut, lsmeans = lsmOut))
       } else {
-        lsm <- lmerTest::ls_means(lmOut, which = groupVar, pairwise = TRUE)
+        return(as.list(summary(lmOut)$coefficients[groupVar, c("Estimate", "Pr(>|t|)")]))
       }
-      lmOut <- matrix(stats::anova(lmOut)[groupVar, "Pr(>F)"], ncol = 1, dimnames = list(groupVar, "Pr(>F)"))
-      lsmOut <- matrix(cbind(lsm[,"Estimate"], lsm[,"Pr(>|t|)"]), ncol = 2, dimnames = list(gsub(groupVar, "", rownames(lsm)), c("Estimate", "Pr(>|t|)")))
-
-      return(list(anova = lmOut, lsmeans = lsmOut))
     }
-    mixedOut <- assayDataApply(object, 1, deFunc, groupVar, pDat, formula(paste("expr", as.character(modelFormula)[2], sep = " ~ ")), pairwise,  elt = elt)
+    mixedOut <- assayDataApply(object, 1, deFunc, groupVar, pDat, formula(paste("expr", as.character(modelFormula)[2], sep = " ~ ")), pairwise, continuous, elt = elt)
   }
   if (!is.null(pAdjust)) {
-    mixedOut["anova", ] <- p.adjust(mixedOut["anova", ], method = pAdjust)
+    if(!continuous) {
+      mixedOut["anova", ] <- p.adjust(mixedOut["anova", ], method = pAdjust)
+    } else {
+      mixedOut["Pr(>|t|)", ] <- p.adjust(mixedOut["Pr(>|t|)", ], method = pAdjust)
+    }
   }
   return(mixedOut)
 }
